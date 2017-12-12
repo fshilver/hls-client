@@ -25,7 +25,6 @@ type configInfo struct {
 	bitrateType string
 }
 
-
 func glbSetup(u *url.URL, c *http.Client) (*url.URL, error) {
 
 	req, err := http.NewRequest("GET", u.String(), nil)
@@ -52,11 +51,10 @@ func glbSetup(u *url.URL, c *http.Client) (*url.URL, error) {
 
 }
 
-func getContent(u *url.URL, c *http.Client) (io.ReadCloser, *url.URL, error) {
+func http_get(u *url.URL, c *http.Client) (io.ReadCloser, *url.URL, error) {
 
 	start := time.Now()
 
-	//	log.Println(u.String())
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, nil, err
@@ -65,14 +63,14 @@ func getContent(u *url.URL, c *http.Client) (io.ReadCloser, *url.URL, error) {
 	//req.Header.Set("User-Agent", "dahakan")
 	resp, err := c.Do(req)
 	if err != nil {
-		//log.Println("error:", u.String(), "delay:", (int(time.Now().Sub(start)) / 1000000))
+		log.Println("error:", u.String(), "delay:", (int(time.Now().Sub(start)) / 1000000))
 		return nil, nil, err
 	}
-
-	delay := (int(time.Now().Sub(start)) / 1000000)
-	if delay >= 1500 {
-		log.Println(u.String(), "delay:", delay)
-	}
+	/*
+		else {
+			log.Println(u.String(), "t:", (int(time.Now().Sub(start)) / 1000000))
+		}
+	*/
 
 	if resp.StatusCode != 200 {
 		return nil, nil, fmt.Errorf("Received HTTP %v for %v", resp.StatusCode, u.String())
@@ -123,10 +121,9 @@ func download(u *url.URL, c *http.Client, f float64, d int) {
 
 	start := time.Now()
 
-	content, _, err := getContent(u, c)
+	content, _, err := http_get(u, c)
 
 	t := int(time.Now().Sub(start)) / 1000000
-
 	if t > 5000 {
 		log.Println(t, " ", u.String())
 	}
@@ -174,11 +171,11 @@ func download(u *url.URL, c *http.Client, f float64, d int) {
 
 }
 
-func getPlaylist(u *url.URL, t int, c *http.Client, d int) {
+func getPlaylist(u *url.URL, t int, c *http.Client, d int, content_type string) {
 
 	for t > 0 {
 
-		content, _, err := getContent(u, c)
+		content, _, err := http_get(u, c)
 		if err != nil {
 			log.Println("error3:", err)
 			break
@@ -196,10 +193,9 @@ func getPlaylist(u *url.URL, t int, c *http.Client, d int) {
 			break
 		}
 
-		if listType == m3u8.MEDIA {
+		mediapl := playlist.(*m3u8.MediaPlaylist)
 
-			mediapl := playlist.(*m3u8.MediaPlaylist)
-
+		if content_type == "live" {
 			for idx, segment := range mediapl.Segments {
 				if segment == nil {
 					chunk := mediapl.Segments[idx-1]
@@ -221,9 +217,19 @@ func getPlaylist(u *url.URL, t int, c *http.Client, d int) {
 					}
 				}
 			}
+
 		} else {
-			log.Println("error: invaild m3u8 Type")
-			break
+
+			for _, segment := range mediapl.Segments {
+				if segment != nil {
+					msURL, err := absolutize(segment.URI, u)
+					if err != nil {
+						log.Printf("[%d] error: %s", err)
+						break
+					}
+					download(msURL, c, segment.Duration, d)
+				}
+			}
 		}
 	}
 }
@@ -257,12 +263,14 @@ func make_dialer(keepAlive bool, clientIP string) DialerFunc {
 
 func main() {
 
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	FileName := flag.String("filename", "", "generation info file name. ")
 	Address := flag.String("addr", "", "gslb server addresss. (ex) 127.0.0.1:18085")
 	SessionCount := flag.Int("count", 0, "the number of session. default is generation info file count")
 	Interval := flag.Int("interval", 1, "session generation interval (second)")
 	PlayTime := flag.Int("playtime", 900, "play time (second)")
 	Delay := flag.Int("delay", 0, "request chunk delay(millisec)")
+	Type := flag.String("type", "live", "content type(live,vod)")
 
 	flag.Parse()
 
@@ -322,7 +330,6 @@ func main() {
 	for i := 0; i < *SessionCount; i++ {
 		num := i
 
-
 		if num >= len(cfglist) {
 			num %= len(cfglist)
 		}
@@ -372,7 +379,7 @@ func main() {
 				log.Printf("[%d] error: %s", n, err)
 				return
 			}
-			log.Printf("[%d] glb response time: %d ms", n, (int(time.Now().Sub(start)) / 1000000))
+			log.Printf("[%d] glb t: %d ms", n, (int(time.Now().Sub(start)) / 1000000))
 
 			// client for vod setup
 			//timeout = time.Duration(5 * time.Second)
@@ -386,12 +393,12 @@ func main() {
 			}
 
 			start = time.Now()
-			content, url, err := getContent(url, client)
+			content, url, err := http_get(url, client)
 			if err != nil {
 				log.Printf("[%d] error: %s", n, err)
 				return
 			}
-			log.Printf("[%d] vod response time: %d ms", n, (int(time.Now().Sub(start)) / 1000000))
+			log.Printf("[%d] vod t: %d ms", n, (int(time.Now().Sub(start)) / 1000000))
 
 			playlist, listType, err := m3u8.DecodeFrom(content, true)
 			if err != nil {
@@ -407,7 +414,7 @@ func main() {
 
 			if listType == m3u8.MASTER {
 
-				// HLS Live ( OTM Channel )
+				// variant playlist (1st m3u8)
 
 				masterpl := playlist.(*m3u8.MasterPlaylist)
 				for _, variant := range masterpl.Variants {
@@ -418,38 +425,27 @@ func main() {
 							log.Printf("[%d] error: %s", n, err)
 							return
 						}
-						getPlaylist(msURL, t, client, *Delay)
+						getPlaylist(msURL, t, client, *Delay, *Type)
 						break
 					}
 				}
 			} else if listType == m3u8.MEDIA {
 
-				// HLS VOD ( SKYLIFE Prime Movie Pack )
+				// playlist (2nd m3u8)
 
 				mediapl := playlist.(*m3u8.MediaPlaylist)
 
 				for _, segment := range mediapl.Segments {
-					if segment != nil {
-						msURL, err := absolutize(segment.URI, u)
-						if err != nil {
-							log.Printf("[%d] error: %s", n, err)
-							break
-						}
-						download(msURL, client, segment.Duration, *Delay)
-						if *Delay > 0 {
-							t -= (*Delay / 1000)
-							log.Println("down3 : ", t)
-						} else {
-							t -= int(segment.Duration)
-							log.Println("down4 : ", t)
-						}
-					} else {
+					if segment == nil {
 						break
 					}
 
-					if t <= 0 {
+					msURL, err := absolutize(segment.URI, u)
+					if err != nil {
+						log.Printf("[%d] error: %s", n, err)
 						break
 					}
+					download(msURL, client, segment.Duration, *Delay)
 				}
 			}
 			log.Printf("[%d] Session End", n)
