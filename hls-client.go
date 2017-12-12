@@ -147,8 +147,11 @@ func download(u *url.URL, c *http.Client, f float64, d int) {
 		if err == io.EOF {
 			break
 		}
+
+		content.Close()
+		return
 	}
-	content.Close()
+	//content.Close()
 
 	restime := int(f*1000) - (int(time.Now().Sub(start)) / 1000000)
 
@@ -169,6 +172,16 @@ func download(u *url.URL, c *http.Client, f float64, d int) {
 
 	}
 
+}
+
+func disconnectDownload(u *url.URL, c *http.Client, f float64) {
+	content, _, err := http_get(u, c)
+	if err != nil {
+		log.Println("error:", err, "url:", u.String())
+		return
+	}
+
+	content.Close()
 }
 
 func getPlaylist(u *url.URL, t int, c *http.Client, d int, content_type string) {
@@ -198,7 +211,7 @@ func getPlaylist(u *url.URL, t int, c *http.Client, d int, content_type string) 
 		if content_type == "live" {
 			for idx, segment := range mediapl.Segments {
 				if segment == nil {
-					chunk := mediapl.Segments[idx-1]
+					chunk := mediapl.Segments[idx-2]
 					if chunk != nil {
 						msURL, err := absolutize(chunk.URI, u)
 						if err != nil {
@@ -213,6 +226,24 @@ func getPlaylist(u *url.URL, t int, c *http.Client, d int, content_type string) 
 							t -= int(chunk.Duration)
 							//	log.Println("time2 : ", t)
 						}
+
+						chunk = mediapl.Segments[idx-1]
+						if chunk != nil {
+							msURL, err := absolutize(chunk.URI, u)
+							if err != nil {
+								log.Println("error:", err)
+								break
+							}
+							disconnectDownload(msURL, c, chunk.Duration)
+							if false {
+								t -= d
+								log.Println("time : ", t)
+							} else {
+								t -= int(chunk.Duration)
+								//	log.Println("time2 : ", t)
+							}
+						}
+						time.Sleep(time.Duration(3000000000))
 						break
 					}
 				}
@@ -224,7 +255,7 @@ func getPlaylist(u *url.URL, t int, c *http.Client, d int, content_type string) 
 				if segment != nil {
 					msURL, err := absolutize(segment.URI, u)
 					if err != nil {
-						log.Printf("[%d] error: %s", err)
+						log.Println("error:", err)
 						break
 					}
 					download(msURL, c, segment.Duration, d)
